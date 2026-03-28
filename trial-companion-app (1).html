@@ -1229,7 +1229,7 @@
 <body>
 
 <!-- hidden patient config -->
-<input type="hidden" id="agent-id" value="agent_4701kmtqwp0efxgatzgtnp9krzhn" />
+<input type="hidden" id="agent-id" value="agent_2001kmtzccd4f4e8k7amrqvcxh0a" />
 <input type="hidden" id="patient-name" value="Billy" />
 <input type="hidden" id="trial-id" value="ILLUMINATE-1" />
 <input type="hidden" id="physician" value="Dr. Priya Mehta" />
@@ -1707,10 +1707,11 @@
 <script type="module">
 
   /* ── State ─────────────────────────────────────────────── */
-  let conversation   = null;
-  let timerInterval  = null;
-  let sessionSecs    = 0;
-  let isDemoMode     = false;
+  let conversation    = null;
+  let timerInterval   = null;
+  let sessionSecs     = 0;
+  let isDemoMode      = false;
+  let isStartingLive  = false;
   let lastSessionData = null;
 
   /* ── Helpers ────────────────────────────────────────────── */
@@ -1747,18 +1748,32 @@
 
   /* ── Start live session ────────────────────────────────── */
   async function startLiveSession() {
+    if (isStartingLive) return;
+
+    // If a stale session is hanging around, close it before starting a new one.
+    if (conversation) {
+      try { await conversation.endSession(); } catch (_) {}
+      conversation = null;
+    }
+
     const agentId = g('agent-id').value.trim();
     if (!agentId) {
       alert('Agent configuration is missing. Please contact your trial administrator.');
       return;
     }
     isDemoMode = false;
+    isStartingLive = true;
     resetSessionUI();
     populateHeader();
     switchScreen('session');
-    setStatus('connect', 'Connecting…');
+    setStatus('connect', 'Connecting voice agent…');
+    setMsg('Preparing microphone and connecting to your Trial Companion…');
 
     try {
+      // Prompt for mic permission up-front so "Start Session" always transitions to a live voice state.
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream.getTracks().forEach(track => track.stop());
+
       const { Conversation } = await import('https://esm.sh/@11labs/client');
 
       conversation = await Conversation.startSession({
@@ -1767,9 +1782,26 @@
           submit_epro_data:    (p) => handleEproSubmit(p),
           trigger_safety_alert:(p) => handleSafetyAlert(p),
         },
-        onConnect:    ()       => { setStatus('speaking','Connected'); startTimer(); setMsg('Your Trial Companion is ready. The session has begun.'); },
-        onDisconnect: ()       => { setStatus('ended','Session Ended'); stopTimer(); finalizeSession(); },
-        onError:      (err)    => { console.error(err); setStatus('error','Connection Error'); setMsg('Connection failed. Please refresh the page and try again.'); },
+        onConnect:    ()       => {
+          isStartingLive = false;
+          startTimer();
+          setStatus('listening','Agent Live — Start Speaking');
+          setWaveform('listen');
+          setMsg('Your Trial Companion is live. You can begin your check-in now.');
+        },
+        onDisconnect: ()       => {
+          conversation = null;
+          isStartingLive = false;
+          setStatus('ended','Session Ended');
+          stopTimer();
+          finalizeSession();
+        },
+        onError:      (err)    => {
+          console.error(err);
+          isStartingLive = false;
+          setStatus('error','Connection Error');
+          setMsg('Connection failed. Please refresh the page and try again.');
+        },
         onModeChange: ({ mode })=> {
           if (mode === 'speaking')  { setStatus('speaking','Agent Speaking'); setWaveform('speak'); }
           else if (mode === 'listening') { setStatus('listening','Listening…'); setWaveform('listen'); }
@@ -1778,8 +1810,14 @@
 
     } catch (err) {
       console.error(err);
+      isStartingLive = false;
+      conversation = null;
       setStatus('error', 'SDK Error');
-      setMsg('Could not connect to the voice service. Please check your connection and try again.');
+      if (err && err.name === 'NotAllowedError') {
+        setMsg('Microphone access is required to start your check-in. Please allow microphone access and try again.');
+      } else {
+        setMsg('Could not connect to the voice service. Please check your connection and try again.');
+      }
     }
   }
 
